@@ -1,0 +1,27 @@
+# --- Python (Archivos compilados y cache) ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Entornos Virtuales (No subas esto nunca) ---
+venv/
+.venv/
+env/
+
+# --- Variables de Entorno (Claves secretas) ---
+.env
+
+# --- Archivos del Sistema Operativo ---
+.DS_Store
+Thumbs.db
+
+# --- Configuración personal de VS Code ---
+.vscode/
+
+# --- Datos ---
+# Ignorar archivos comprimidos grandes
+data/*.zip
+data/*.gz
+
+*.log
+*.png
