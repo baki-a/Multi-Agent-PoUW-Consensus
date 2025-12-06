@@ -1,3 +1,3 @@
 # Multi-Agent PoUW Consensus
 
-Simulación de Blockchain Proof-of-Useful-Work aplicando RL y VRP.
+Blockchain simulation Proof-of-Useful-Work applying RL and VRP.
