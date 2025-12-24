@@ -1,38 +1,12 @@
 import heapq
 from miners import MinerAbstract
+from heuristic import Heuristic
 from scipy.spatial import distance
 
 class NodeAStar(MinerAbstract):
     def __init__(self):
         super().__init__(name="Miner A*")
 
-    def heuristic(self, current_node, pending_packages, coordinates):
-        """
-        La heurística calcula la distancia euclídea entre el nodo actual y el objetivo
-
-        Para completar la misión, OBLIGATORIAMENTE se ha de viajar al menos 
-        al paquete más cercano. Por tanto, esta estimación nunca es mayor que el coste
-        real de la solución.
-        """
-
-        if not pending_packages:
-            return 0.0
-
-        current_position = coordinates[current_node]
-
-        # Calculamso la distancia a todos los paquetes que faltan y nos quedamos 
-        # con la más cercana
-
-        # En otras palabras: en los mejores de los casos, iré directo al más cercano
-
-        minimum_distance = float('inf')
-
-        for package in pending_packages:
-            package_pos = coordinates[package]
-            dist = distance.euclidean(current_position, package_pos)
-            if dist < minimum_distance:
-                minimum_distance = dist
-        return minimum_distance
 
     def solve(self, problem_instance):
         """
@@ -50,7 +24,7 @@ class NodeAStar(MinerAbstract):
         # cola de prioridad
         # (f_score, g_score, current_node, path, pending_packages)
         priority_queue = []
-        h_start = self.heuristic(start_node, package_initial, coordinates)
+        h_start = Heuristic.euclidean_distance(start_node, package_initial, coordinates)
         heapq.heappush(priority_queue, (h_start, 0, start_node, [start_node], package_initial))
 
         # hacemos un diccionario para guardar los nodos visitados
@@ -98,7 +72,7 @@ class NodeAStar(MinerAbstract):
                 new_pendint_tuple = tuple(sorted(new_pending_list))
 
                 # calculamos la heurística
-                h = self.heuristic(neighbor, new_pendint_tuple, coordinates)
+                h = Heuristic.euclidean_distance(neighbor, new_pendint_tuple, coordinates)
 
                 # calculamos el f_score
                 new_f = new_g + h 
