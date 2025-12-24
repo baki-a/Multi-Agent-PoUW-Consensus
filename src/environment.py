@@ -1,3 +1,4 @@
+from _pytest.compat import num_mock_patch_args
 import networkx as nx
 import numpy as np 
 import random 
@@ -18,6 +19,7 @@ class ProblemInstance:
         self.graph = nx.Graph()
         self.adversary_position = None
         self.adversary_target = None
+        self.node_coordinates = {}
 
         # 1. Capa Base. NP-hard --> carga el mapa físico
         loaded = False
@@ -36,13 +38,26 @@ class ProblemInstance:
         # 3. Capa de adversario. Añade al rival
         self.add_adversary_layer()
 
+        self.packages = self.generate_mission(num_packages = 5)
+
+    def generate_mission(self, num_packages):
+        """
+        Genera una misión con num_packages paquetes al azar
+        """
+        possible_nodes = list(self.graph.nodes())
+        start_node = self.get_start_node()
+        if start_node in possible_nodes:
+            possible_nodes.remove(start_node)
+
+        count = min(num_packages, len(possible_nodes))
+        return random.sample(possible_nodes, count)
+        
+
     def load_from_tsplib(self, filename):
         """
         Lee un archivo estándar .tsp y construye el grafo a base de sus datos
         Extrae las coordenades 
         """
-
-        coordenadas = {}
         lectura_coordenadas = False
 
         try:
@@ -75,26 +90,26 @@ class ProblemInstance:
                 try:
                     # partes[0] es el id del nodo
                     # partes[1] es la coordenada x
-                    # partes[2] es la coordenada y
+                    # partes[2] es la coordenada y***
                     node_id = int(partes[0])
                     x = float(partes[1])
                     y = float(partes[2])
-                    coordenadas[node_id] = (x, y)
+                    self.node_coordinates[node_id] = (x, y)
                 except ValueError:
                     print(f"Error: línea inválida: {line}")
                     continue
-        if len(coordenadas) == 0:
+        if len(self.node_coordinates) == 0:
             print(f"Error: no se encontraron coordenadas en el archivo {filename}")
             return False
         
         # Añadimos nodos y aristas al grafo
-        nodes = list(coordenadas.keys())
+        nodes = list(self.node_coordinates.keys())
         for i in range(len(nodes)):
             for j in range(i + 1, len(nodes)):
                 u, v = nodes[i], nodes[j]
 
                 # Distancia euclidiana como coste base
-                dist = distance.euclidean(coordenadas[u], coordenadas[v])
+                dist = distance.euclidean(self.node_coordinates[u], self.node_coordinates[v])
                 self.graph.add_edge(u, v, weight=dist, traffic_prob=0.0)
 
         print(f"Mapa cargado desde {filename}: {len(nodes)} ciudades")
@@ -105,10 +120,10 @@ class ProblemInstance:
         """
         Genera un grafo aleatorio con num_nodes nodos
         """
-        coordenadas = {i: (np.random.rand() * 100, np.random.rand() * 100) for i in range(num_nodes)}
+        self.node_coordinates = {i: (np.random.rand() * 100, np.random.rand() * 100) for i in range(num_nodes)}
         for i in range(num_nodes):
             for j in range(i + 1, num_nodes):
-                dist = distance.euclidean(coordenadas[i], coordenadas[j])
+                dist = distance.euclidean(self.node_coordinates[i], self.node_coordinates[j])
                 self.graph.add_edge(i, j, weight=dist, traffic_prob=0.0)
         
         print(f"Mapa generado aleatoriamente: {num_nodes} ciudades")
@@ -144,6 +159,9 @@ class ProblemInstance:
 
     def print_graph(self):
         print(self.graph)
+
+    def get_node_coordinates(self):
+        return self.node_coordinates
 
 # Pruebas rapidas
 if __name__ == "__main__":
