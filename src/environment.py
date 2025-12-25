@@ -1,15 +1,21 @@
-from _pytest.compat import num_mock_patch_args
 import networkx as nx
 import numpy as np 
 import random 
+import copy
 from scipy.spatial import distance
 
 class ProblemInstance:
 
-    def __init__(self, tsplib_file=None, num_nodes=20, random_seed=None):
+    def __init__(self, tsplib_file=None, num_nodes=20, random_seed=None, k_neighbors=None):
         """
         Inicializa una instancia de un problema
         Si se da un archivo real, carga datos reales. Si no, genera aleatorios para testing rapido
+        
+        Args:
+            tsplib_file: Path to TSPLIB format file
+            num_nodes: Number of nodes for random generation
+            random_seed: Seed for reproducibility
+            k_neighbors: If set, creates K-nearest-neighbor sparse graph. None = fully connected
         """
 
         if random_seed:
@@ -20,6 +26,7 @@ class ProblemInstance:
         self.adversary_position = None
         self.adversary_target = None
         self.node_coordinates = {}
+        self.k_neighbors = k_neighbors
 
         # 1. Capa Base. NP-hard --> carga el mapa físico
         loaded = False
@@ -31,6 +38,10 @@ class ProblemInstance:
         elif not loaded and tsplib_file:
             print(f"Error: no se pudo cargar el archivo {tsplib_file}")
             return
+
+        # Apply sparse graph if k_neighbors specified
+        if self.k_neighbors:
+            self._apply_knn_sparsity()
 
         # 2. Capa estocástica. Con incertidumbre. Añade tráfico
         self.add_traffic_layer()
@@ -162,6 +173,224 @@ class ProblemInstance:
 
     def get_node_coordinates(self):
         return self.node_coordinates
+
+    # ==================== K-NEAREST-NEIGHBOR SPARSE GRAPH ====================
+    
+    def _apply_knn_sparsity(self):
+        """
+        Convert fully connected graph to K-nearest-neighbor sparse graph.
+        Keeps only the k nearest neighbors for each node, creating choke points.
+        """
+        if not self.k_neighbors:
+            return
+            
+        k = self.k_neighbors
+        nodes = list(self.graph.nodes())
+        edges_to_keep = set()
+        
+        for node in nodes:
+            # Get distances to all other nodes
+            distances = []
+            for other in nodes:
+                if other != node and self.graph.has_edge(node, other):
+                    dist = self.graph[node][other]['weight']
+                    distances.append((dist, other))
+            
+            # Sort by distance and keep k nearest
+            distances.sort()
+            for dist, neighbor in distances[:k]:
+                # Add both directions to set (undirected graph)
+                edge = tuple(sorted([node, neighbor]))
+                edges_to_keep.add(edge)
+        
+        # Remove edges not in the keep set
+        edges_to_remove = []
+        for u, v in self.graph.edges():
+            edge = tuple(sorted([u, v]))
+            if edge not in edges_to_keep:
+                edges_to_remove.append((u, v))
+        
+        for u, v in edges_to_remove:
+            self.graph.remove_edge(u, v)
+        
+        # Ensure graph is connected - add minimum spanning tree edges if needed
+        if not nx.is_connected(self.graph):
+            # Get all original distances and add MST edges
+            components = list(nx.connected_components(self.graph))
+            while len(components) > 1:
+                # Find closest nodes between components
+                min_dist = float('inf')
+                best_edge = None
+                for c1 in components[0]:
+                    for c2 in components[1]:
+                        dist = distance.euclidean(
+                            self.node_coordinates[c1], 
+                            self.node_coordinates[c2]
+                        )
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_edge = (c1, c2)
+                
+                if best_edge:
+                    self.graph.add_edge(best_edge[0], best_edge[1], 
+                                       weight=min_dist, traffic_prob=0.0)
+                components = list(nx.connected_components(self.graph))
+        
+        print(f"Grafo convertido a K-NN sparse (k={k}): {self.graph.number_of_edges()} aristas")
+
+    # ==================== STOCHASTIC LAYER METHODS ====================
+    
+    def get_stochastic_cost(self, u, v, sample=True):
+        """
+        Get the travel cost between two nodes considering traffic probability.
+        
+        Args:
+            u, v: Edge endpoints
+            sample: If True, randomly sample based on traffic_prob.
+                    If False, return expected cost.
+        
+        Returns:
+            float: Actual or expected travel cost
+        """
+        if not self.graph.has_edge(u, v):
+            return float('inf')
+        
+        edge_data = self.graph[u][v]
+        base_cost = edge_data['weight']
+        traffic_prob = edge_data.get('traffic_prob', 0.0)
+        
+        if sample:
+            # Stochastic sampling: traffic doubles the cost
+            if random.random() < traffic_prob:
+                return base_cost * 2.0
+            return base_cost
+        else:
+            # Expected value: E[cost] = (1-p)*base + p*(2*base) = base*(1+p)
+            return base_cost * (1.0 + traffic_prob)
+    
+    def get_expected_cost(self, u, v):
+        """Get expected cost considering traffic probability."""
+        return self.get_stochastic_cost(u, v, sample=False)
+    
+    def get_edges_with_traffic(self):
+        """Return list of edges that have traffic probability > 0."""
+        return [(u, v, d) for u, v, d in self.graph.edges(data=True) 
+                if d.get('traffic_prob', 0) > 0]
+
+    # ==================== ADVERSARIAL LAYER METHODS ====================
+    
+    def get_adversary_position(self):
+        """Get current adversary position."""
+        return self.pos_adversario
+    
+    def set_adversary_position(self, node):
+        """Set adversary position (for simulation)."""
+        if node in self.graph.nodes():
+            self.pos_adversario = node
+    
+    def get_adversary_neighbors(self):
+        """Get all possible moves for the adversary."""
+        return list(self.graph.neighbors(self.pos_adversario))
+    
+    def move_adversary_toward(self, target_node):
+        """
+        Move adversary one step toward target using shortest path.
+        Returns the new position.
+        """
+        if self.pos_adversario == target_node:
+            return self.pos_adversario
+        
+        try:
+            path = nx.shortest_path(self.graph, self.pos_adversario, target_node, weight='weight')
+            if len(path) > 1:
+                self.pos_adversario = path[1]
+        except nx.NetworkXNoPath:
+            pass  # No path exists, adversary stays in place
+        
+        return self.pos_adversario
+    
+    def move_adversary_greedy(self, miner_position, miner_destination):
+        """
+        Adversary moves greedily to intercept miner.
+        Tries to get between miner's current position and destination.
+        """
+        neighbors = self.get_adversary_neighbors()
+        if not neighbors:
+            return self.pos_adversario
+        
+        best_neighbor = None
+        best_score = float('inf')
+        
+        for neighbor in neighbors:
+            # Score based on shortest path distances
+            try:
+                dist_to_dest = nx.shortest_path_length(self.graph, neighbor, miner_destination, weight='weight')
+            except nx.NetworkXNoPath:
+                dist_to_dest = float('inf')
+            
+            try:
+                dist_to_miner = nx.shortest_path_length(self.graph, neighbor, miner_position, weight='weight')
+            except nx.NetworkXNoPath:
+                dist_to_miner = float('inf')
+            
+            # Prefer positions close to both miner and destination
+            score = min(dist_to_dest, dist_to_miner)
+            if score < best_score:
+                best_score = score
+                best_neighbor = neighbor
+        
+        if best_neighbor:
+            self.pos_adversario = best_neighbor
+        
+        return self.pos_adversario
+    
+    def is_blocked_by_adversary(self, node):
+        """Check if a node is blocked by the adversary."""
+        return node == self.pos_adversario
+    
+    def is_edge_blocked(self, u, v):
+        """Check if traversing edge u->v would be blocked by adversary at v."""
+        return self.pos_adversario == v
+    
+    def get_safe_neighbors(self, node):
+        """Get neighbors that are not blocked by adversary."""
+        return [n for n in self.graph.neighbors(node) 
+                if not self.is_blocked_by_adversary(n)]
+
+    # ==================== GAME STATE METHODS ====================
+    
+    def clone(self):
+        """Create a deep copy of the environment for simulation."""
+        new_env = ProblemInstance.__new__(ProblemInstance)
+        new_env.graph = self.graph.copy()
+        new_env.node_coordinates = self.node_coordinates.copy()
+        new_env.pos_adversario = self.pos_adversario
+        new_env.obj_adversario = self.obj_adversario
+        new_env.packages = self.packages.copy()
+        new_env.adversary_position = self.adversary_position
+        new_env.adversary_target = self.adversary_target
+        new_env.k_neighbors = self.k_neighbors
+        return new_env
+    
+    def get_state(self, current_node, pending_packages):
+        """
+        Get a hashable state representation for search algorithms.
+        """
+        return (current_node, tuple(sorted(pending_packages)), self.pos_adversario)
+    
+    def apply_action(self, current_node, next_node, pending_packages):
+        """
+        Apply miner action and return new state.
+        Returns: (new_pending, cost, blocked)
+        """
+        new_pending = list(pending_packages)
+        if next_node in new_pending:
+            new_pending.remove(next_node)
+        
+        blocked = self.is_blocked_by_adversary(next_node)
+        cost = self.graph[current_node][next_node]['weight'] if not blocked else float('inf')
+        
+        return new_pending, cost, blocked
 
 # Pruebas rapidas
 if __name__ == "__main__":
