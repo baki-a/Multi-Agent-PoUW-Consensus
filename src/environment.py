@@ -6,7 +6,7 @@ from scipy.spatial import distance
 
 class ProblemInstance:
 
-    def __init__(self, tsplib_file=None, num_nodes=20, random_seed=None):
+    def __init__(self, tsplib_file=None, num_nodes=20, random_seed=None, add_traffic=True):
         """
         Inicializa una instancia de un problema
         Si se da un archivo real, carga datos reales. Si no, genera aleatorios para testing rapido
@@ -33,7 +33,8 @@ class ProblemInstance:
             return
 
         # 2. Capa estocástica. Con incertidumbre. Añade tráfico
-        self.add_traffic_layer()
+        if add_traffic:
+            self.add_traffic_layer()
 
         # 3. Capa de adversario. Añade al rival
         self.add_adversary_layer()

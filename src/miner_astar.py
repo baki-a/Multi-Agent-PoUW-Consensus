@@ -69,16 +69,16 @@ class NodeAStar(MinerAbstract):
                     new_pending_list.remove(neighbor)
 
                 # convertimos la lista a tupla ordenada para sea inmutable
-                new_pendint_tuple = tuple(sorted(new_pending_list))
+                new_pending_tuple = tuple(sorted(new_pending_list))
 
                 # calculamos la heurística
-                h = Heuristic.euclidean_distance(neighbor, new_pendint_tuple, coordinates)
+                h = Heuristic.euclidean_distance(neighbor, new_pending_tuple, coordinates)
 
                 # calculamos el f_score
                 new_f = new_g + h 
 
                 # añadimos el vecino a la cola de prioridad
-                heapq.heappush(priority_queue, (new_f, new_g, neighbor, path + [neighbor], new_pendint_tuple))
+                heapq.heappush(priority_queue, (new_f, new_g, neighbor, path + [neighbor], new_pending_tuple))
 
         # si no encontramos solución, devolvemos None
         return None
