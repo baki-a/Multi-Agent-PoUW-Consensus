@@ -1,22 +1,3 @@
-"""
-Minimax Miner with Alpha-Beta Pruning
-
-Based on: Russell & Norvig, "Artificial Intelligence: A Modern Approach" (AIMA)
-          Chapter 5: Adversarial Search
-
-This miner treats the VRP as a two-player zero-sum game:
-  - MAX player (Miner): Tries to minimize delivery cost
-  - MIN player (Adversary): Tries to block the miner
-
-The Alpha-Beta pruning optimizes the search by eliminating branches
-that cannot influence the final decision.
-
-AIMA Pseudocode Reference (Fig 5.7):
-  function ALPHA-BETA-SEARCH(state) returns an action
-      v ← MAX-VALUE(state, -∞, +∞)
-      return the action in ACTIONS(state) with value v
-"""
-
 import heapq
 from miners import MinerAbstract
 from heuristic import Heuristic
