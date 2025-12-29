@@ -74,9 +74,9 @@ class MinerRL(MinerAbstract):
             distancia_adversario = self.get_dist(nodo_actual, pos_adversario, coords)
             
         # Clasificamos el peligro en 3 niveles
-        if distancia_adversario < 20: 
+        if distancia_adversario < 10: 
             estado_peligro = 0 # ¡Peligro! Muy cerca
-        elif distancia_adversario < 50: 
+        elif distancia_adversario < 30: 
             estado_peligro = 1 # Cuidado, está cerca
         else: 
             estado_peligro = 2 # Seguro, está lejos
@@ -96,12 +96,14 @@ class MinerRL(MinerAbstract):
             trafico_promedio = suma_trafico / len(vecinos)
             
         # Clasificamos el tráfico en 3 niveles
-        if trafico_promedio < 0.1: 
-            estado_trafico = 0 # Tráfico Bajo (Libre)
-        elif trafico_promedio < 0.3: 
-            estado_trafico = 1 # Tráfico Medio
+        # AJUSTE: Bajamos los umbrales para adaptarnos a la densidad real del mapa (20% aristas con tráfico).
+        # Ahora el agente será más sensible a detectar congestiones.
+        if trafico_promedio < 0.01: 
+            estado_trafico = 0 # Tráfico Bajo (Totalmente Libre)
+        elif trafico_promedio < 0.15: 
+            estado_trafico = 1 # Tráfico Medio (Alguna calle con tráfico)
         else: 
-            estado_trafico = 2 # Tráfico Alto (Atasco)
+            estado_trafico = 2 # Tráfico Alto (Zona congestionada)
             
         return (estado_peligro, estado_trafico)
 
@@ -226,7 +228,7 @@ class MinerRL(MinerAbstract):
             self.q_table[estado] = {}
         self.q_table[estado][accion] = nuevo_valor_q
 
-    def train(self, problem_instance, episodes=1000):
+    def train(self, problem_instance, episodes):
         print(f"Entrenando {self.name} durante {episodes} episodios...")
         
         graph = problem_instance.graph
@@ -242,7 +244,23 @@ class MinerRL(MinerAbstract):
             alpha = self.alpha_start - progreso * (self.alpha_start - self.alpha_end)
             
             # Preparamos un escenario aleatorio para entrenar
-            nodo_inicio = random.choice(nodes)
+            # A veces forzamos situaciones extremas para garantizar exploración de los 9 estados
+            if random.random() < 0.3: # 30% de las veces forzamos situaciones
+                nodo_inicio = random.choice(nodes)
+                # Forzamos tráfico en los vecinos de este nodo
+                vecinos = list(graph.neighbors(nodo_inicio))
+                nivel_trafico_deseado = random.choice([0, 1, 2]) # Forzamos bajo, medio o alto
+                
+                for v in vecinos:
+                    if nivel_trafico_deseado == 0:
+                        graph[nodo_inicio][v]['traffic_prob'] = 0.0
+                    elif nivel_trafico_deseado == 1:
+                        graph[nodo_inicio][v]['traffic_prob'] = 0.1
+                    else:
+                        graph[nodo_inicio][v]['traffic_prob'] = 0.4 # Alto tráfico
+            else:
+                nodo_inicio = random.choice(nodes)
+
             num_paquetes = random.randint(3, 5)
             posibles_destinos = [n for n in nodes if n != nodo_inicio]
             paquetes = set(random.sample(posibles_destinos, min(num_paquetes, len(posibles_destinos))))
@@ -336,7 +354,7 @@ class MinerRL(MinerAbstract):
         """
         if not self.trained:
             print("Advertencia: El agente no ha sido entrenado. Entrenando rápido...")
-            self.train(problem_instance, episodes=500)
+            self.train(problem_instance, episodes=10000)
             
         nodo_actual = problem_instance.get_start_node()
         paquetes_pendientes = set(problem_instance.packages)
