@@ -1,0 +1,30 @@
+=================================================================
+  PoUW BLOCKCHAIN SIMULATION REPORT
+  Generated: 2025-12-30 21:39:00
+=================================================================
+
+ROUND RESULTS
+-----------------------------------------------------------------
+Round   Map                       Winner                   Cost Type        
+-----------------------------------------------------------------
+1       att48.tsp                 Supernode-RL          12293.7 CLEAN WIN   
+4       berlin52.tsp              Supernode-RL           6748.8 RESCUE WIN  
+6       burma14.tsp               Miner A*               5015.4 RESCUE WIN  
+8       eil51.tsp                 Miner A*               5099.9 RESCUE WIN  
+9       eil76.tsp                 Miner A*               5115.0 RESCUE WIN  
+15      gr96.tsp                  Miner A*               5112.5 RESCUE WIN  
+17      pr76.tsp                  NodeExpectimax        22272.5 CLEAN WIN   
+18      rat99.tsp                 Miner A*               5198.8 RESCUE WIN  
+19      st70.tsp                  Miner A*               5239.2 RESCUE WIN  
+21      ulysses16.tsp             NodeExpectimax         5020.3 RESCUE WIN  
+22      ulysses22.tsp             NodeExpectimax         5035.7 RESCUE WIN  
+
+FINAL STANDINGS
+-----------------------------------------------------------------
+Miner                    Blocks   Clean Wins     Avg Cost
+-----------------------------------------------------------------
+Miner A*                      6            0       5130.1
+NodeExpectimax                3            1      10776.2
+Supernode-RL                  2            1       9521.3
+NodeMinimax                   0            0          0.0
+=================================================================

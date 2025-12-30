@@ -3,31 +3,67 @@ import random
 import statistics
 import os
 import glob
+import sys
 from datetime import datetime
 import networkx as nx
 
-# Importa tus modulos
+# Fix Windows console encoding for Unicode characters
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+# Local module imports - these are our core simulation components
 from environment import ProblemInstance
 from heuristic import Heuristic
 from miner_astar import NodeAStar
 from miner_expectimax import NodeExpectimax
 from miner_minimax import NodeMinimax
-from miner_rl import MinerRL 
+from miner_rl import MinerRL
+
+# ============================================================================
+# CONFIGURATION CONSTANTS
+# These control the "rescue" tie-breaker behavior when no miner hits threshold
+# ============================================================================
+
+# If the cost difference between two miners is less than 5%, we consider them "equal"
+# and break the tie using solve time instead. This prevents a miner that takes 6 seconds
+# to find a solution 1% better from beating one that solves in 0.1 seconds.
+COST_SIMILARITY_THRESHOLD = 0.05
+
+# Maximum number of nodes we allow in a map for the demo.
+# Larger maps take too long and cause the presentation to drag.
+MAX_NODES_FOR_DEMO = 90
+
 
 class Block:
-    def __init__(self, index, timestamp, problem_name, solution_data, miner_name, threshold):
-        self.index = index
-        self.timestamp = timestamp
-        self.problem_id = problem_name 
+    """
+    Represents a single "mined" block in our PoUW chain.
+    Each block contains the solution to one VRP problem instance.
+    """
+    def __init__(self, block_idx, created_at, problem_name, solution_data, miner_name, threshold):
+        self.index = block_idx
+        self.timestamp = created_at
+        self.problem_id = problem_name
         self.solution_path = solution_data['path']
-        self.real_cost = solution_data['real_cost'] 
+        self.real_cost = solution_data['real_cost']
         self.threshold = threshold
         self.miner_name = miner_name
-        self.hash = hash(f"{index}{timestamp}{miner_name}{solution_data['real_cost']}")
+        # Simple hash for demo purposes - in a real blockchain this would be SHA-256
+        self.hash = hash(f"{block_idx}{created_at}{miner_name}{solution_data['real_cost']}")
+
 
 class NetworkValidator:
+    """
+    Validates solutions submitted by miners and calculates difficulty thresholds.
+    Think of this as the "network consensus" that verifies work is actually useful.
+    """
+    
     @staticmethod
     def calculate_dynamic_threshold(env):
+        """
+        Calculate what counts as a "good enough" solution for this problem.
+        We use a greedy baseline multiplied by a factor - this gives miners
+        some slack while still requiring them to beat a naive approach.
+        """
         start = env.get_start_node()
         coords = env.node_coordinates
         packages = list(env.packages)
@@ -36,233 +72,426 @@ class NetworkValidator:
         curr = start
         temp_packages = packages.copy()
         
-        # Heuristica Greedy para base
+        # Greedy nearest-neighbor gives us a baseline cost
         while temp_packages:
             next_p = min(temp_packages, key=lambda p: Heuristic.euclidean_distance(curr, tuple([p]), coords))
             estimated_dist += Heuristic.euclidean_distance(curr, tuple([next_p]), coords)
             curr = next_p
             temp_packages.remove(next_p)
-            
+        
+        # Multiply by 4x to set the threshold - we're generous here because
+        # traffic and adversary can significantly inflate actual costs
         return max(estimated_dist * 4.0, 3000.0)
 
     @staticmethod
     def validate_block(env, route):
-        if not route: return float('inf'), False
+        """
+        Simulate running the proposed route through the real environment.
+        Returns (actual_cost, survived_without_capture).
+        
+        This is where stochastic elements (traffic) and adversarial elements
+        (the chasing rival) affect the final outcome.
+        """
+        if not route:
+            return float('inf'), False
 
         real_cost = 0.0
         current_node = route[0]
         adversary_pos = getattr(env, 'pos_adversario', getattr(env, 'adversary_pos', None))
-        caught = False
+        got_caught = False
         coords = env.node_coordinates
 
         for i in range(1, len(route)):
             next_node = route[i]
             
-            # 1. Trafico
+            # Traffic layer: with some probability, travel time doubles on this edge
             edge = env.graph[current_node][next_node]
             weight = edge['weight']
             if random.random() < edge.get('traffic_prob', 0.0):
                 weight *= 2.0
             real_cost += weight
 
-            # 2. Adversario
+            # Adversary layer: the rival tries to catch us
             if adversary_pos is not None:
-                if adversary_pos == current_node or adversary_pos == next_node: caught = True
+                # Check if we're at the same position as the rival
+                if adversary_pos == current_node or adversary_pos == next_node:
+                    got_caught = True
                 
-                # --- ARREGLO TYPE ERROR ---
-                # Pasamos [adversary_pos] (lista) en vez de un entero suelto
+                # Calculate how close the rival is to decide if they should chase
                 dist_to_rival = Heuristic.euclidean_distance(current_node, [adversary_pos], coords)
                 
-                # Persecución inteligente limitada
+                # Limiting chase probability for demo - full pursuit makes it too hard
                 should_chase = (dist_to_rival < 600) and (random.random() < 0.5)
 
                 if should_chase:
                     try:
                         path = nx.shortest_path(env.graph, adversary_pos, next_node, weight='weight')
-                        if len(path) > 1: adversary_pos = path[1]
-                    except: pass
+                        if len(path) > 1:
+                            adversary_pos = path[1]
+                    except:
+                        pass
                 else:
+                    # Random wandering when not actively chasing
                     if random.random() < 0.5:
                         neighbors = list(env.graph.neighbors(adversary_pos))
-                        if neighbors: adversary_pos = random.choice(neighbors)
+                        if neighbors:
+                            adversary_pos = random.choice(neighbors)
                 
-                if adversary_pos == next_node: caught = True
+                if adversary_pos == next_node:
+                    got_caught = True
 
             current_node = next_node
         
-        if caught:
-            real_cost += 5000 
-            return real_cost, False 
+        # Heavy penalty for getting caught - effectively disqualifies the solution
+        if got_caught:
+            real_cost += 5000
+            return real_cost, False
             
         return real_cost, True
 
+
 class PoUWConsensus:
+    """
+    Main simulation controller. Manages the blockchain, registered miners,
+    and orchestrates mining rounds.
+    """
+    
     def __init__(self):
         self.chain = []
         self.miners = []
         self.stats = {}
-        self.real_maps = self.load_real_maps()
+        self.round_history = []  # Track all rounds for the final report
+        self.real_maps = self._load_real_maps()
         
-    def load_real_maps(self):
-        # Buscamos todos los archivos
+    def _load_real_maps(self):
+        """
+        Load TSP problem files from the data directory.
+        We filter out maps that are too large for the demo - 
+        otherwise individual rounds can take minutes.
+        """
         all_files = glob.glob("data/*.tsp") + glob.glob("*.tsp")
         valid_files = []
         
-        print(f"🔎 Analizando {len(all_files)} mapas candidatos...")
+        print("")
+        print("=" * 65)
+        print("  SCANNING MAP FILES")
+        print("=" * 65)
         
         for f in all_files:
             try:
                 with open(f, 'r') as file:
-                    # Leemos para ver si es un TSP valido, pero SIN filtrar por tamaño
-                    is_valid = False
                     for line in file:
                         if "DIMENSION" in line:
                             parts = line.split(':')
                             if len(parts) >= 2:
-                                dim = int(parts[1].strip())
-                                print(f"  ✅ {os.path.basename(f)} aceptado ({dim} nodos)")
-                                is_valid = True
+                                node_count = int(parts[1].strip())
+                                
+                                # Skip maps that are too large for demo purposes
+                                if node_count < MAX_NODES_FOR_DEMO+10:
+                                    print(f"  [OK] {os.path.basename(f):<25} ({node_count} nodes)")
+                                    valid_files.append(f)
+                                else:
+                                    print(f"  [--] {os.path.basename(f):<25} ({node_count} nodes) - too large, skipping")
                             break
-                    
-                    if is_valid:
-                        valid_files.append(f)
-                        
+                            
             except Exception as e:
-                print(f"  ⚠️ Error leyendo {f}: {e}")
+                print(f"  [!!] Error reading {f}: {e}")
 
         if not valid_files:
-            print("⚠️ No se encontraron mapas. Usando generados.")
+            print("  [!!] No suitable maps found. Will use procedurally generated ones.")
         
+        print("=" * 65)
+        print("")
         return valid_files
 
     def register_miners(self, miners):
+        """Register the competing miners for the simulation."""
         self.miners = miners
         for m in miners:
-            self.stats[m.name] = {'wins': 0, 'valid': 0, 'total_cost': 0}
+            self.stats[m.name] = {'wins': 0, 'clean_wins': 0, 'total_cost': 0.0}
     
-    def start_mining_round(self, block_index):
-        dynamic_seed = int(time.time()) + block_index * 55
+    def start_mining_round(self, block_idx):
+        """
+        Run a single mining round where all miners compete to solve the same VRP.
+        The winner gets to "mine" this block.
+        """
+        dynamic_seed = int(time.time()) + block_idx * 55
 
-        # Selección del mapa
+        # Pick which map to use this round
         map_name = "Procedural"
         if self.real_maps:
-            map_file = self.real_maps[(block_index - 1) % len(self.real_maps)]
+            map_file = self.real_maps[(block_idx - 1) % len(self.real_maps)]
             map_name = os.path.basename(map_file)
             
         try:
-            # Intentamos cargar el entorno
+            # Initialize the problem environment
             if self.real_maps:
                 env = ProblemInstance(tsplib_file=map_file, random_seed=dynamic_seed, add_traffic=True)
             else:
-                map_name = f"Procedural-{block_index}"
+                map_name = f"Procedural-{block_idx}"
                 env = ProblemInstance(num_nodes=35, random_seed=dynamic_seed, add_traffic=True)
 
-            # --- CORRECCIÓN DE SEGURIDAD ---
-            # Si el grafo está vacío (falló la carga), lanzamos error para saltar esta ronda
+            # Safety check - sometimes map loading fails silently
             if not env.graph or len(env.graph.nodes) == 0:
-                raise ValueError(f"El mapa {map_name} no se cargó correctamente (Grafo vacío).")
+                raise ValueError(f"Map {map_name} failed to load (empty graph).")
 
             threshold = NetworkValidator.calculate_dynamic_threshold(env)
-            pos_adv = getattr(env, 'pos_adversario', getattr(env, 'adversary_pos', 'N/A'))
+            adversary_node = getattr(env, 'pos_adversario', getattr(env, 'adversary_pos', 'N/A'))
 
-            print(f"\nBloque #{block_index} || Mapa: {map_name} ({len(env.graph.nodes)} nodos) || Threshold: {threshold:.1f}")
-            print(f"Mision: {len(env.packages)} paquetes || Rival en: {pos_adv}")
+            # Round header
+            print("")
+            print("=" * 65)
+            print(f"  ROUND #{block_idx} | {map_name} ({len(env.graph.nodes)} nodes) | Threshold: {threshold:.0f}")
+            print("-" * 65)
+            print(f"  Mission: {len(env.packages)} packages | Adversary at node: {adversary_node}")
+            print("-" * 65)
+            print(f"  {'MINER':<18} | {'TIME':>9} | {'COST':>10} | STATUS")
+            print("-" * 65)
 
-            # ... (Resto de la lógica de mineros: candidates, bucle for, validación...)
-            # Copia aquí el resto del código de start_mining_round que tenías
-            # desde "candidates = []" hasta el final del método.
-            
+            # Let each miner attempt to solve the problem
             candidates = []
             for miner in self.miners:
-                # ... (tu código de ejecución de mineros) ...
-                start = time.time()
+                solve_start = time.time()
                 path = []
                 try:
                     path = miner.solve(env)
-                except Exception as e:
+                except Exception as solve_error:
                     path = []
-                duration = time.time() - start
+                solve_duration = time.time() - solve_start
                 
-                real_cost, is_valid_logic = NetworkValidator.validate_block(env, path)
+                real_cost, survived = NetworkValidator.validate_block(env, path)
                 passed_threshold = real_cost <= threshold
-                is_valid_block = is_valid_logic and passed_threshold
+                is_valid_solution = survived and passed_threshold
                 
                 candidates.append({
-                    'miner': miner, 
-                    'path': path, 
-                    'real_cost': real_cost, 
-                    'valid': is_valid_block,
-                    'caught': not is_valid_logic
+                    'miner': miner,
+                    'path': path,
+                    'real_cost': real_cost,
+                    'solve_time': solve_duration,
+                    'valid': is_valid_solution,
+                    'caught': not survived
                 })
                 
-                if not is_valid_logic: status = "FAIL (Atrapado)"
-                elif not passed_threshold: status = "FAIL (Ineficiente)"
-                else: status = "OK"
-                print(f"- {miner.name:<15} | Time: {duration:.3f}s | Real: {real_cost:.1f} {status}")
+                # Format status with clear indicators
+                if not survived:
+                    status = "[X] CAUGHT"
+                elif not passed_threshold:
+                    status = "[X] INEFFICIENT"
+                else:
+                    status = "[OK]"
+                    
+                print(f"  {miner.name:<18} | {solve_duration:>8.3f}s | {real_cost:>10.1f} | {status}")
 
-            # Selección del ganador
+            print("-" * 65)
+
+            # Select the winner using our refined logic
             valid_candidates = [c for c in candidates if c['valid']]
-            forced_win = False
+            is_rescue_round = False
+            
             if not valid_candidates:
+                # Nobody hit the threshold - this is a "rescue" scenario
+                is_rescue_round = True
                 survivors = [c for c in candidates if c['path']]
-                clean_survivors = [c for c in survivors if not c['caught']]
-                if clean_survivors:
-                    valid_candidates = clean_survivors
+                not_caught = [c for c in survivors if not c['caught']]
+                
+                if not_caught:
+                    valid_candidates = not_caught
                 elif survivors:
-                    print(" [AVISO] Todos atrapados. Ganará el mártir más eficiente.")
+                    print(f"  [!!] All miners caught! Selecting the fastest martyr...")
                     valid_candidates = survivors
-                    forced_win = True
 
             if valid_candidates:
-                winner = min(valid_candidates, key=lambda x: x['real_cost'])
-                w_miner = winner['miner']
-                note = " (RESCATADO)" if forced_win else ""
-                self.chain.append(Block(block_index, datetime.now(), map_name, winner, w_miner.name, threshold))
-                self.stats[w_miner.name]['wins'] += 1
-                if not forced_win: self.stats[w_miner.name]['valid'] += 1
-                self.stats[w_miner.name]['total_cost'] += winner['real_cost']
-                print(f"Ganador: {w_miner.name} (Coste: {winner['real_cost']:.1f}){note}")
+                winner = self._pick_winner(valid_candidates, is_rescue_round)
+                winning_miner = winner['miner']
+                
+                # Record the block
+                self.chain.append(Block(
+                    block_idx, datetime.now(), map_name, winner, 
+                    winning_miner.name, threshold
+                ))
+                
+                # Update stats
+                self.stats[winning_miner.name]['wins'] += 1
+                if not is_rescue_round:
+                    self.stats[winning_miner.name]['clean_wins'] += 1
+                self.stats[winning_miner.name]['total_cost'] += winner['real_cost']
+                
+                # Record for final report
+                win_type = "CLEAN WIN" if not is_rescue_round else "RESCUE WIN"
+                self.round_history.append({
+                    'round': block_idx,
+                    'map': map_name,
+                    'winner': winning_miner.name,
+                    'cost': winner['real_cost'],
+                    'time': winner['solve_time'],
+                    'type': win_type
+                })
+                
+                print(f"  >> WINNER: {winning_miner.name} | Cost: {winner['real_cost']:.1f} | [{win_type}]")
             else:
-                print("Bloque huérfano FINAL")
+                print(f"  [!!] ORPHAN BLOCK - No valid solution found")
+                self.round_history.append({
+                    'round': block_idx,
+                    'map': map_name,
+                    'winner': 'NONE',
+                    'cost': 0,
+                    'time': 0,
+                    'type': 'ORPHAN'
+                })
+                
+            print("=" * 65)
 
         except Exception as e:
-            print(f"⚠️ SALTANDO BLOQUE #{block_index} ({map_name}): {e}")
-            # El programa continuará con el siguiente bloque en lugar de detenerse
+            print("")
+            print("=" * 65)
+            print(f"  [!!] SKIPPING ROUND #{block_idx} ({map_name}): {e}")
+            print("=" * 65)
 
-    def print_stats(self):
-        print("\nRESULTADOS FINALES DE LA COMPETICIÓN")
-        print(f"{'Minero':<20} | {'Bloques':<8} | {'Coste Medio':<12}")
-        for name, data in self.stats.items():
-            div = data['valid'] if data['valid'] > 0 else (data['wins'] if data['wins'] > 0 else 1)
-            avg = data['total_cost'] / div
-            print(f"{name:<20} | {data['wins']:<8} | {avg:<12.1f}")
+    def _pick_winner(self, candidates, is_rescue):
+        """
+        Select the winning miner from valid candidates.
+        
+        In normal rounds: lowest cost wins.
+        In rescue rounds: if the top two costs are within our threshold,
+        we favor the faster solver to encourage efficiency.
+        """
+        sorted_by_cost = sorted(candidates, key=lambda x: x['real_cost'])
+        
+        if not is_rescue or len(sorted_by_cost) < 2:
+            # Clean win - just pick the best cost
+            return sorted_by_cost[0]
+        
+        # Rescue scenario - check if we should consider time
+        first, second = sorted_by_cost[0], sorted_by_cost[1]
+        
+        # Calculate how different the costs are
+        cost_gap = abs(first['real_cost'] - second['real_cost'])
+        cost_baseline = max(first['real_cost'], 1.0)  # Avoid division by zero
+        gap_ratio = cost_gap / cost_baseline
+        
+        if gap_ratio < COST_SIMILARITY_THRESHOLD:
+            # Costs are essentially the same - pick the faster solver
+            if second['solve_time'] < first['solve_time']:
+                print(f"  -> Tie-breaker: {second['miner'].name} wins by speed ({second['solve_time']:.3f}s vs {first['solve_time']:.3f}s)")
+                return second
+        
+        return first
+
+    def print_final_stats(self):
+        """Display the final leaderboard after all rounds."""
+        print("")
+        print("=" * 65)
+        print("  FINAL STANDINGS")
+        print("=" * 65)
+        print(f"  {'MINER':<20} | {'BLOCKS':>8} | {'CLEAN':>6} | {'AVG COST':>10}")
+        print("-" * 65)
+        
+        for name, data in sorted(self.stats.items(), key=lambda x: x[1]['wins'], reverse=True):
+            total_wins = data['wins']
+            clean_wins = data['clean_wins']
+            
+            # Avoid division by zero
+            avg_cost = data['total_cost'] / max(total_wins, 1)
+            
+            print(f"  {name:<20} | {total_wins:>8} | {clean_wins:>6} | {avg_cost:>10.1f}")
+        
+        print("=" * 65)
+        print("")
+    
+    def save_report(self, filename=None):
+        """
+        Save a summary report of the entire simulation run.
+        Useful for comparing different algorithm configurations.
+        """
+        # Create reports directory if it doesn't exist
+        os.makedirs("reports", exist_ok=True)
+        
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"reports/run_report_{timestamp}.txt"
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write("=" * 65 + "\n")
+            f.write("  PoUW BLOCKCHAIN SIMULATION REPORT\n")
+            f.write(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 65 + "\n\n")
+            
+            # Round-by-round breakdown
+            f.write("ROUND RESULTS\n")
+            f.write("-" * 65 + "\n")
+            f.write(f"{'Round':<7} {'Map':<25} {'Winner':<18} {'Cost':>10} {'Type':<12}\n")
+            f.write("-" * 65 + "\n")
+            
+            for entry in self.round_history:
+                f.write(f"{entry['round']:<7} {entry['map']:<25} {entry['winner']:<18} {entry['cost']:>10.1f} {entry['type']:<12}\n")
+            
+            f.write("\n")
+            
+            # Final standings
+            f.write("FINAL STANDINGS\n")
+            f.write("-" * 65 + "\n")
+            f.write(f"{'Miner':<20} {'Blocks':>10} {'Clean Wins':>12} {'Avg Cost':>12}\n")
+            f.write("-" * 65 + "\n")
+            
+            for name, data in sorted(self.stats.items(), key=lambda x: x[1]['wins'], reverse=True):
+                total_wins = data['wins']
+                clean_wins = data['clean_wins']
+                avg_cost = data['total_cost'] / max(total_wins, 1)
+                f.write(f"{name:<20} {total_wins:>10} {clean_wins:>12} {avg_cost:>12.1f}\n")
+            
+            f.write("=" * 65 + "\n")
+        
+        print(f"  [>>] Report saved to: {filename}")
+
 
 def main():
+    """Main entry point for the PoUW blockchain simulation."""
     sim = PoUWConsensus()
+    
+    # Initialize our four competing miners:
+    # - A* (optimal pathfinding, no uncertainty modeling)
+    # - Expectimax (handles stochastic traffic)
+    # - Minimax (handles adversarial rival)
+    # - RL Supernode (learned behavior, fast inference)
     
     miners = [
         NodeAStar(),
         NodeExpectimax(),
-        NodeMinimax(time_limit=0.3), # Limite de tiempo para evitar lags
+        # Limiting Minimax time to 0.3s per turn so the demo doesn't stall.
+        # In production you'd want this higher, but for presentation purposes
+        # we need rounds to complete in reasonable time.
+        NodeMinimax(time_limit=0.3),
         MinerRL()
     ]
 
-    print("Entrenando RL (3000 episodios)...")
-    train_env = ProblemInstance(num_nodes=35, random_seed=999, add_traffic=True)
-    miners[3].train(train_env, episodes=3000)
-    print("Entrenamiento completado.")
+    # Train the RL agent before competition begins
+    # 3000 episodes is a balance between training quality and startup time
+    print("")
+    print("=" * 65)
+    print("  TRAINING RL AGENT (3000 episodes)")
+    print("=" * 65)
+    training_env = ProblemInstance(num_nodes=35, random_seed=999, add_traffic=True)
+    miners[3].train(training_env, episodes=3000)
+    print("  [OK] Training complete")
+    print("=" * 65)
 
     sim.register_miners(miners)
     
-    # Ejecutamos rondas segun mapas disponibles
+    # Run one round per available map (minimum 5 rounds)
     num_maps = len(sim.real_maps)
-    rounds = max(num_maps, 5)
+    total_rounds = max(num_maps, 5)
     
-    print(f"Iniciando {rounds} rondas de minería...")
-    for i in range(1, rounds + 1):
-        sim.start_mining_round(i)
+    print("")
+    print("=" * 65)
+    print(f"  STARTING COMPETITION: {total_rounds} rounds")
+    print("=" * 65)
     
-    sim.print_stats()
+    for round_num in range(1, total_rounds + 1):
+        sim.start_mining_round(round_num)
+    
+    sim.print_final_stats()
+    sim.save_report()
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,24 @@
+=================================================================
+  PoUW BLOCKCHAIN SIMULATION REPORT
+  Generated: 2025-12-30 21:29:42
+=================================================================
+
+ROUND RESULTS
+-----------------------------------------------------------------
+Round   Map                       Winner                   Cost Type        
+-----------------------------------------------------------------
+1       Procedural-1              NodeMinimax             160.0 CLEAN WIN   
+2       Procedural-2              Supernode-RL           5143.8 RESCUE WIN  
+3       Procedural-3              Miner A*               5134.6 RESCUE WIN  
+4       Procedural-4              NodeExpectimax         5139.7 RESCUE WIN  
+5       Procedural-5              Miner A*               5129.1 RESCUE WIN  
+
+FINAL STANDINGS
+-----------------------------------------------------------------
+Miner                    Blocks   Clean Wins     Avg Cost
+-----------------------------------------------------------------
+Miner A*                      2            0       5131.9
+NodeExpectimax                1            0       5139.7
+NodeMinimax                   1            1        160.0
+Supernode-RL                  1            0       5143.8
+=================================================================
