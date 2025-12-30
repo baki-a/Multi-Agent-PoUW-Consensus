@@ -104,35 +104,30 @@ class PoUWConsensus:
         self.real_maps = self.load_real_maps()
         
     def load_real_maps(self):
-        # Buscamos todos los archivos
+        # Filtro de mapas para evitar esperas eternas en mapas gigantes
         all_files = glob.glob("data/*.tsp") + glob.glob("*.tsp")
         valid_files = []
         
         print(f"🔎 Analizando {len(all_files)} mapas candidatos...")
-        
         for f in all_files:
             try:
                 with open(f, 'r') as file:
-                    # Leemos para ver si es un TSP valido, pero SIN filtrar por tamaño
-                    is_valid = False
                     for line in file:
                         if "DIMENSION" in line:
                             parts = line.split(':')
                             if len(parts) >= 2:
                                 dim = int(parts[1].strip())
-                                print(f"  ✅ {os.path.basename(f)} aceptado ({dim} nodos)")
-                                is_valid = True
+                                # Solo aceptamos mapas < 150 nodos para esta demo
+                                if dim < 150: 
+                                    valid_files.append(f)
+                                    print(f"  ✅ {os.path.basename(f)} aceptado ({dim} nodos)")
+                                else:
+                                    print(f"  ❌ {os.path.basename(f)} descartado (Demasiado grande)")
                             break
-                    
-                    if is_valid:
-                        valid_files.append(f)
-                        
-            except Exception as e:
-                print(f"  ⚠️ Error leyendo {f}: {e}")
+            except: pass
 
         if not valid_files:
-            print("⚠️ No se encontraron mapas. Usando generados.")
-        
+            print("⚠️ No se encontraron mapas pequeños. Usando generados.")
         return valid_files
 
     def register_miners(self, miners):
