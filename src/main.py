@@ -1,164 +1,221 @@
+import time
+import random
+import statistics
+import os
+import glob
+from datetime import datetime
+import networkx as nx
+
+# Importa tus modulos
 from environment import ProblemInstance
+from heuristic import Heuristic
 from miner_astar import NodeAStar
 from miner_expectimax import NodeExpectimax
-from miner_rl import MinerRL
-import os
-import time
+from miner_minimax import NodeMinimax
+from miner_rl import MinerRL 
 
-def test_system():
+class Block:
+    def __init__(self, index, timestamp, problem_name, solution_data, miner_name, threshold):
+        self.index = index
+        self.timestamp = timestamp
+        self.problem_id = problem_name 
+        self.solution_path = solution_data['path']
+        # AQUI estaba el error, ahora solution_data si tendra 'real_cost'
+        self.real_cost = solution_data['real_cost'] 
+        self.threshold = threshold
+        self.miner_name = miner_name
+        self.hash = hash(f"{index}{timestamp}{miner_name}{solution_data['real_cost']}")
 
-    print("Iniciando test del sistema")
-
-    # cargamos el mapa real
-    tsp_file = "data/berlin52.tsp"
-
-    if not os.path.exists(tsp_file):
-        print(f"Error: el archivo {tsp_file} no se encuentra")
-        env = ProblemInstance(num_nodes=20, random_seed=42)
-    else:
-        print(f"Cargando el mapa real {tsp_file}")
-        env = ProblemInstance(tsplib_file=tsp_file, random_seed=42)
-
-    # imprimimos la misión para verificar
-    start_node = env.get_start_node()
-    print(f"Inicio en nodo: {start_node}")
-    print(f"Paquetes a entregar ({len(env.packages)}): {env.packages}")
-
-    # inicializamos el miner
-    miner = NodeAStar()
-
-    # solucionamos
-    path = miner.solve(env)
-
-    if path:
-        print(f"SOLUCIÓN ENCONTRADA")
-        print(f"Ruta: {path}")
-        print(f"Coste: {miner.solution_cost:.2f}")
-
-        # verficación manual
-        missed = [p for p in env.packages if p not in path]
-        if missed:
-            print(f"Se han perdido los paquetes: {missed}")
-        else:
-            print("Se han entregado todos los paquetes")
-    else:
-        print("No se encontró solución")
-
-def calculate_real_cost(env, path):
-    """
-    Simula el recorrido de una ruta y calcula el coste real sufriendo el tráfico estocástico.
-    """
-    if not path: return float('inf')
-    
-    total_cost = 0.0
-    for i in range(len(path) - 1):
-        u, v = path[i], path[i+1]
-        edge_data = env.graph[u][v]
-        base_cost = edge_data.get('weight', 1.0)
-        traffic_prob = edge_data.get('traffic_prob', 0.0)
+class NetworkValidator:
+    @staticmethod
+    def calculate_dynamic_threshold(env):
+        start = env.get_start_node()
+        coords = env.node_coordinates
+        packages = list(env.packages)
         
-        # Simulación de tráfico
-        import random
-        actual_cost = base_cost
-        if random.random() < traffic_prob:
-            actual_cost *= 2.0
+        estimated_dist = 0
+        curr = start
+        temp_packages = packages.copy()
+        
+        # Heuristica Greedy para base
+        while temp_packages:
+            next_p = min(temp_packages, key=lambda p: Heuristic.euclidean_distance(curr, tuple([p]), coords))
+            estimated_dist += Heuristic.euclidean_distance(curr, tuple([next_p]), coords)
+            curr = next_p
+            temp_packages.remove(next_p)
             
-        total_cost += actual_cost
-    return total_cost
+        # Multiplicador x3.5. Muy permisivo para que entren soluciones seguras aunque sean largas
+        return max(estimated_dist * 3.5, 2000.0)
 
-def run_experiment(name, env, miner_rl=None):
-    print(f"Iniciando experimento {name}")
+    @staticmethod
+    def validate_block(env, route):
+        if not route: return float('inf'), False
 
-    # ejecutamos a*
-    miner_astar = NodeAStar()
+        real_cost = 0.0
+        current_node = route[0]
+        adversary_pos = getattr(env, 'pos_adversario', getattr(env, 'adversary_pos', None))
+        caught = False
 
-    start_time = time.time()
-    path_astar = miner_astar.solve(env)
-    end_time = time.time()
-    time_astar = end_time - start_time
-    
-    # Coste Real A*
-    real_cost_astar = calculate_real_cost(env, path_astar)
-    
-    # ejecutamos expectimax
-    miner_expectimax = NodeExpectimax()
+        for i in range(1, len(route)):
+            next_node = route[i]
+            
+            # 1. Trafico
+            edge = env.graph[current_node][next_node]
+            weight = edge['weight']
+            if random.random() < edge.get('traffic_prob', 0.0):
+                weight *= 2.0
+            real_cost += weight
 
-    start_time = time.time()
-    path_expectimax = miner_expectimax.solve(env)
-    end_time = time.time()
-    time_expectimax = end_time - start_time
-    
-    # Coste Real Expectimax
-    real_cost_expectimax = calculate_real_cost(env, path_expectimax)
+            # 2. Adversario
+            if adversary_pos is not None:
+                if adversary_pos == current_node or adversary_pos == next_node: caught = True
+                
+                # Probabilidad 50%. El adversario falla mucho mas.
+                if random.random() < 0.5: 
+                    try:
+                        path = nx.shortest_path(env.graph, adversary_pos, next_node, weight='weight')
+                        if len(path) > 1: adversary_pos = path[1]
+                    except: pass
+                
+                if adversary_pos == next_node: caught = True
 
-    # imprimimos resultados
-    print(f"Resultados experimento {name}")
-    print(f"A*: {path_astar}")
-    print(f"  Coste Planificado: {miner_astar.solution_cost:.2f}")
-    print(f"  Coste REAL (Simulado): {real_cost_astar:.2f}")
-    print(f"  Tiempo: {time_astar:.2f}")
-    
-    print(f"Expectimax: {path_expectimax}")
-    print(f"  Coste Planificado: {miner_expectimax.solution_cost:.2f}")
-    print(f"  Coste REAL (Simulado): {real_cost_expectimax:.2f}")
-    print(f"  Tiempo: {time_expectimax:.2f}")
-    
-    if miner_rl:
-        start_time = time.time()
-        path_rl = miner_rl.solve(env)
-        end_time = time.time()
-        time_rl = end_time - start_time
-        # El coste de RL ya se calcula simulado dentro de su solve, pero para ser justos recalculamos igual
-        real_cost_rl = calculate_real_cost(env, path_rl)
+            current_node = next_node
         
-        print(f"RL: {path_rl}")
-        print(f"  Coste REAL (Simulado): {real_cost_rl:.2f}")
-        print(f"  Tiempo: {time_rl:.2f}")
+        if caught:
+            real_cost += 5000 
+            return real_cost, False 
+            
+        return real_cost, True
 
-    if time_expectimax > time_astar:
-        diff = time_expectimax - time_astar
-        print(f"El algoritmo expectimax tarda {diff:.2f} segundos más que A*")
-    else:
-        diff = time_astar - time_expectimax
-        print(f"El algoritmo A* tarda {diff:.2f} segundos más que expectimax")
+class PoUWConsensus:
+    def __init__(self):
+        self.chain = []
+        self.miners = []
+        self.stats = {}
+        self.real_maps = self.load_real_maps()
+        
+    def load_real_maps(self):
+        files = glob.glob("data/*.tsp") + glob.glob("*.tsp")
+        if files:
+            print(f"Mapas reales encontrados ({len(files)}): {[os.path.basename(f) for f in files]}")
+        else:
+            print("No se encontraron mapas reales. Usando generados.")
+        return files
 
-
-    if path_astar and path_expectimax:
-        print("Se han entregado todos los paquetes")
-    else:
-        print("No se han entregado todos los paquetes")
-
-def main_experiment():
-    print("Pruebas experimentales")
+    def register_miners(self, miners):
+        self.miners = miners
+        for m in miners:
+            self.stats[m.name] = {'wins': 0, 'valid': 0, 'total_cost': 0}
     
-    # cargamos el mapa real
-    tsp_file = "data/berlin52.tsp"
-    
-    print("Cargando el mapa real")
-    if not os.path.exists(tsp_file):
-        print(f"Error: el archivo {tsp_file} no se encuentra")
-        env_no_traffic = ProblemInstance(num_nodes=20, random_seed=42, add_traffic=False)
-        env_traffic = ProblemInstance(num_nodes=20, random_seed=42, add_traffic=True)
-    else:
-        print(f"Cargando el mapa real {tsp_file}")
-        env_no_traffic = ProblemInstance(tsplib_file=tsp_file, random_seed=42, add_traffic=False)
-        env_traffic = ProblemInstance(tsplib_file=tsp_file, random_seed=42, add_traffic=True)
-    
-    # Entrenamos el agente RL una vez con el entorno más complejo (con tráfico)
-    print("Entrenando Agente RL (Supernode)...")
-    miner_rl = MinerRL()
-    miner_rl.train(env_traffic, episodes=10000)
+    def start_mining_round(self, block_index):
+        # Generacion de semilla dinamica
+        dynamic_seed = int(time.time()) + block_index * 55
 
-    run_experiment("No traffic", env_no_traffic, miner_rl)
+        if self.real_maps:
+            map_file = self.real_maps[(block_index - 1) % len(self.real_maps)]
+            map_name = os.path.basename(map_file)
+            env = ProblemInstance(tsplib_file=map_file, random_seed=dynamic_seed, add_traffic=True)
+        else:
+            map_name = f"Procedural-{block_index}"
+            env = ProblemInstance(num_nodes=35, random_seed=dynamic_seed, add_traffic=True)
 
-    print("Cargando el mapa con tráfico")
-    env_traffic.packages = env_no_traffic.packages
-    run_experiment("Traffic", env_traffic, miner_rl)
-    
-    
+        threshold = NetworkValidator.calculate_dynamic_threshold(env)
+        pos_adv = getattr(env, 'pos_adversario', getattr(env, 'adversary_pos', 'N/A'))
 
+        print(f"\nBloque #{block_index} || Mapa: {map_name} ({len(env.graph.nodes)} nodos) || Threshold: {threshold:.1f}")
+        print(f"Mision: {len(env.packages)} paquetes || Rival en: {pos_adv}")
+
+        candidates = []
+
+        for miner in self.miners:
+            start = time.time()
+            path = []
+            
+            try:
+                path = miner.solve(env)
+            except Exception as e:
+                path = []
+
+            duration = time.time() - start
+
+            # Validacion
+            real_cost, is_valid_logic = NetworkValidator.validate_block(env, path)
+            passed_threshold = real_cost <= threshold
+            is_valid_block = is_valid_logic and passed_threshold
+            
+            # --- CORRECCION AQUI: Usamos 'real_cost' como clave ---
+            candidates.append({
+                'miner': miner, 
+                'path': path, 
+                'real_cost': real_cost,  # <--- CAMBIADO DE 'cost' A 'real_cost'
+                'valid': is_valid_block
+            })
+
+            if not is_valid_logic: status = "FAIL (Atrapado)"
+            elif not passed_threshold: status = "FAIL (Ineficiente)"
+            else: status = "OK"
+
+            print(f"- {miner.name:<15} | Time: {duration:.3f}s | Real: {real_cost:.1f} {status}")
+        
+        # LOGICA DE GANADOR
+        valid_candidates = [c for c in candidates if c['valid']]
+        
+        if not valid_candidates:
+            # FALLBACK: Si nadie paso el threshold, gana el superviviente
+            # --- CORRECCION AQUI: Usamos c['real_cost'] ---
+            survivors = [c for c in candidates if c['real_cost'] < 5000 and c['path']]
+            if survivors:
+                print(" [AVISO] Nadie supero el umbral de eficiencia. Ganara el mejor superviviente.")
+                valid_candidates = survivors
+
+        if valid_candidates:
+            # --- CORRECCION AQUI: Usamos x['real_cost'] ---
+            winner = min(valid_candidates, key=lambda x: x['real_cost'])
+            w_miner = winner['miner']
+            
+            self.chain.append(Block(block_index, datetime.now(), map_name, winner, w_miner.name, threshold))
+            self.stats[w_miner.name]['wins'] += 1
+            self.stats[w_miner.name]['valid'] += 1
+            # --- CORRECCION AQUI: Usamos winner['real_cost'] ---
+            self.stats[w_miner.name]['total_cost'] += winner['real_cost']
+            
+            print(f"Ganador: {w_miner.name} (Coste: {winner['real_cost']:.1f})")
+        else:
+            print("Bloque huerfano (Todos fueron atrapados)")
+
+    def print_stats(self):
+        print("\nRESULTADOS FINALES DE LA COMPETICION")
+        print(f"{'Minero':<20} | {'Bloques':<8} | {'Coste Medio':<12}")
+        for name, data in self.stats.items():
+            avg = data['total_cost'] / data['valid'] if data['valid'] > 0 else 0
+            print(f"{name:<20} | {data['wins']:<8} | {avg:<12.1f}")
+
+def main():
+    sim = PoUWConsensus()
+    
+    miners = [
+        NodeAStar(),
+        NodeExpectimax(),
+        NodeMinimax(max_depth=3, beam_width=5),
+        MinerRL()
+    ]
+
+    print("Entrenando RL (5000 episodios)...")
+    train_env = ProblemInstance(num_nodes=35, random_seed=999, add_traffic=True)
+    miners[3].train(train_env, episodes=5000)
+    print("Entrenamiento completado.")
+
+    sim.register_miners(miners)
+    
+    num_maps = len(sim.real_maps)
+    rounds = max(num_maps, 5)
+    
+    print(f"Iniciando {rounds} rondas de mineria...")
+    
+    for i in range(1, rounds + 1):
+        sim.start_mining_round(i)
+    
+    sim.print_stats()
 
 if __name__ == "__main__":
-    #test_system()
-    main_experiment()
-
+    main()

@@ -27,7 +27,7 @@ class Heuristic:
         return minimum_distance
 
     @staticmethod
-    def heuristic_minimax(current_node, pending_packages, adversary_pos, coordinates, total_cost, total_packages_count):
+    def evaluate_minimax(current_node, pending_packages, adversary_pos, coordinates, total_cost, total_packages_count):
         """
         Función de utilidad que devuleve un número para decir si va ganando o perdiendo dependiendo de 4 factores:
         - Cantidad de paquetes pendientes
