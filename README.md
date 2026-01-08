@@ -8,7 +8,7 @@ A blockchain simulation implementing **Proof-of-Useful-Work (PoUW)** through the
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Overview](#-overview)
 - [Features](#-features)
@@ -22,7 +22,7 @@ A blockchain simulation implementing **Proof-of-Useful-Work (PoUW)** through the
 
 ---
 
-## 🎯 Overview
+## Overview
 
 This project reimagines blockchain consensus by replacing traditional Proof-of-Work (solving hash puzzles) with **Proof-of-Useful-Work**: solving real-world optimization problems that have actual business value.
 
